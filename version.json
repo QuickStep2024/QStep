@@ -1,5 +1,5 @@
 {
-  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.1/Quickstep.exe",
-  "version": "1.1",
-  "notes": "json추가"
+  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.1.1/Quickstep.exe",
+  "notes": "점수판 무한 루프 버그 수정",
+  "version": "1.1.1"
 }
