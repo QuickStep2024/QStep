@@ -1,5 +1,5 @@
 {
-  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.1/Quickstep.exe",
-  "notes": "종료 오류 해결",
-  "version": "1.2.1"
+  "version": "1.2.2",
+  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.2/Quickstep.exe",
+  "notes": "V1.2 업데이트 이후 버그 조치"
 }
