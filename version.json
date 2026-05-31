@@ -1,5 +1,9 @@
 {
-  "notes": "++ 실시간 대기 큐 리스트 생성",
-  "version": "1.2.5",
-  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.5/Quickstep.exe"
+  "version": "1.2.6",
+  "notes": [
+    "++ 데이타 수신시 버벅거림 제거",
+    "++ 세팅완료된 방 빠른배정",
+    "++ 1등 축하 메시지 디자인 수정"
+  ],
+  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.6/Quickstep.exe"
 }
