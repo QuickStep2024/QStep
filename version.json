@@ -1,9 +1,8 @@
 {
   "notes": [
-    "++성능 대폭 개선",
-    "++핫패치 적용",
-    "++1등 축하 Design 개선"
+    "+v1.2.9 최종마무리",
+    "+버그 최종 마무리"
   ],
-  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.8/Quickstep.exe",
-  "version": "1.2.8"
+  "version": "1.2.9",
+  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.9/Quickstep.exe"
 }
