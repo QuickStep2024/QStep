@@ -792,6 +792,312 @@ def patched_sb_animate_nickname_marquee(self, label_index):
         data['after_id'] = self.after(data['animation_speed_ms'], lambda idx=label_index: self._animate_nickname_marquee(idx))
 
 
+def patched_rm_preload_current_month_cache(self):
+    """프로그램 시작 시 현재 월의 랭킹 데이터를 Firebase로부터 백그라운드 로드하여 캐시를 예열(Warm-up)합니다."""
+    if not self.db_app:
+        return
+    
+    def _async_preload():
+        logging.info("[핫패치] RankingManager: 현재 월 랭킹 데이터 백그라운드 예열(Warm-up) 시작...")
+        from datetime import datetime
+        import threading
+        now = datetime.now()
+        year, month = now.year, now.month
+        
+        quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
+        config = getattr(quickstep_mod, 'config', {})
+        room_sizes_config_str = config.get('표시할점수판', 'S,M,L,XL')
+        room_sizes = [size.strip() for size in room_sizes_config_str.split(',') if size.strip()]
+        
+        for room_size in room_sizes:
+            key = (year, month, room_size)
+            with self.lock:
+                in_cache = key in self.cache
+            
+            if not in_cache:
+                logging.info(f"[핫패치] RankingManager: 방크기 {room_size}의 랭킹 데이터 비동기 예열 시도...")
+                self.get_ranking_list(year, month, room_size)
+        
+        logging.info("[핫패치] RankingManager: 현재 월 랭킹 데이터 백그라운드 예열 완료.")
+        
+    import threading
+    threading.Thread(target=_async_preload, name="RankingWarmupThread", daemon=True).start()
+
+def patched_rm_execute_save_to_disk(self, year, month, room_size, sorted_list):
+    filepath = self._get_cache_filepath(year, month, room_size)
+    try:
+        if not hasattr(self, 'file_lock'):
+            import threading
+            self.file_lock = threading.Lock()
+            
+        with self.file_lock:
+            temp_filepath = filepath + ".tmp"
+            with open(temp_filepath, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(sorted_list, f, ensure_ascii=False)
+            import os
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            os.rename(temp_filepath, filepath)
+    except Exception as e:
+        logging.error(f"[핫패치] 랭킹 캐시 파일 저장 실패 ({filepath}): {e}")
+
+def patched_cctv_stop_recording(self, step_index, recorded_temp_file_path):
+    """지정된 채널(step_index)의 CCTV 녹화를 중지합니다. (비동기 스레드 위임)"""
+    import threading
+    import time
+    import logging
+    from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+    
+    current_thread_name = threading.current_thread().name
+    logging.info(f"[핫패치] CCTVApp.stop_recording 호출됨 (Step: {step_index + 1}, 스레드: {current_thread_name}, 임시파일: {recorded_temp_file_path})")
+
+    if not (0 <= step_index < self.num_rooms):
+        logging.error(f"[핫패치] 잘못된 step_index ({step_index})로 녹화 중지 시도.")
+        if self.main_window_ref and hasattr(self.main_window_ref, 'recording_stopped_signal'):
+            try:
+                QMetaObject.invokeMethod(self.main_window_ref.recording_stopped_signal, "emit", Qt.QueuedConnection,
+                                         Q_ARG(int, step_index), Q_ARG(str, ""))
+            except Exception as e_emit:
+                logging.error(f"[핫패치] CCTVApp.stop_recording (잘못된 인덱스): recording_stopped_signal emit 중 오류: {e_emit}", exc_info=True)
+        return
+
+    if self.is_recording_status[step_index]:
+        self.is_recording_status[step_index] = False
+        
+        def _async_stop():
+            try:
+                recorder = self.vlc_recorders[step_index]
+                if recorder.is_playing():
+                    recorder.stop()
+                logging.info(f"[핫패치] Step{step_index + 1} 녹화 중지됨 (VLC stop 호출 완료). 파일 시스템에 쓰기 완료 대기...")
+            except Exception as e:
+                logging.error(f"[핫패치] Step{step_index + 1} VLC stop 호출 중 오류: {e}", exc_info=True)
+            
+            time.sleep(1.5)
+            if self.winfo_exists():
+                self.after(0, lambda: self._after_stop_recording_complete(step_index, recorded_temp_file_path))
+
+        threading.Thread(target=_async_stop, name=f"VlcStopThread_Step{step_index+1}", daemon=True).start()
+    else:
+        logging.warning(f"[핫패치] Step {step_index + 1} 녹화 중지 시도되었으나, 이미 녹화 중이 아니었습니다.")
+        if self.main_window_ref and hasattr(self.main_window_ref, 'recording_stopped_signal'):
+            final_path_to_emit_not_recording = ""
+            if recorded_temp_file_path:
+                 logging.info(f"[핫패치] CCTVApp.stop_recording (else branch): 'is_recording_status'가 false였지만, 'recorded_temp_file_path'가 전달되었습니다. 빈 경로로 시그널을 발생시킵니다.")
+            try:
+                self.main_window_ref.recording_stopped_signal.emit(step_index, final_path_to_emit_not_recording)
+            except Exception as e_emit_not_rec:
+                logging.error(f"[핫패치] CCTVApp: 미녹화 상황에서 recording_stopped_signal.emit 중 예외: {e_emit_not_rec}", exc_info=True)
+
+def patched_cctv_after_stop_recording_complete(self, step_index, recorded_temp_file_path):
+    """stop_recording 호출 후 1.5초 비동기 대기 후에 최종 검증 및 시그널 전달을 완료합니다."""
+    import os
+    import logging
+    
+    try:
+        final_path_to_emit = ""
+        if recorded_temp_file_path and os.path.exists(recorded_temp_file_path) and os.path.getsize(recorded_temp_file_path) > 1024:
+            logging.info(f"[핫패치] 녹화된 유효한 임시 파일: {recorded_temp_file_path}, 크기: {os.path.getsize(recorded_temp_file_path)} bytes")
+            final_path_to_emit = recorded_temp_file_path
+        else:
+            logging.error(f"[핫패치] 녹화된 임시 파일 '{recorded_temp_file_path}'을(를) 찾을 수 없거나, 생성되지 않았거나, 크기가 너무 작습니다. 하이퍼랩스 처리 불가.")
+
+        if self.main_window_ref and hasattr(self.main_window_ref, 'recording_stopped_signal'):
+            try:
+                self.main_window_ref.recording_stopped_signal.emit(step_index, final_path_to_emit)
+                logging.info(f"[핫패치] Step{step_index+1} recording_stopped_signal emit 완료: '{final_path_to_emit}'")
+            except Exception as e_emit:
+                logging.error(f"[핫패치] Step{step_index+1} recording_stopped_signal emit 실패: {e_emit}", exc_info=True)
+    except Exception as e:
+        logging.error(f"[핫패치] _after_stop_recording_complete 처리 중 예외 발생: {e}", exc_info=True)
+
+def patched_cctv_execute_set_stream_visibility(self, step_index, show_live_stream, is_initial_start=False):
+    """실제로 CCTV 스트림 또는 GIF 플레이스홀더를 표시/숨김 처리하는 내부 메소드입니다. (VLC 비동기 위임)"""
+    import os
+    import random
+    import threading
+    import logging
+    
+    if not self.winfo_exists():
+        self.visibility_change_pending[step_index] = False
+        return
+
+    player = self.vlc_players[step_index]
+    player_frame_widget = self.vlc_player_frames[step_index]
+    placeholder_label = self.placeholder_labels[step_index]
+    step_name = f"Step{step_index+1}"
+
+    try:
+        if step_index in self.gif_after_ids and self.gif_after_ids[step_index]:
+            self.after_cancel(self.gif_after_ids[step_index])
+            self.gif_after_ids[step_index] = None
+
+        if show_live_stream:
+            logging.info(f"[핫패치] {step_name}: 라이브 CCTV 스트림 표시 요청.")
+            placeholder_label.pack_forget()
+            if not player_frame_widget.winfo_ismapped():
+                player_frame_widget.pack(fill="both", expand=True)
+            player_frame_widget.update_idletasks()
+
+            def _async_play():
+                try:
+                    if player and player.is_playing():
+                        player.stop()
+                    media = self.play_instance.media_new(self.rtsp_urls[step_index])
+                    player.set_media(media)
+                    media.release()
+                    if player_frame_widget.winfo_exists() and player_frame_widget.winfo_id() != 0:
+                        player.set_hwnd(player_frame_widget.winfo_id())
+                        player.play()
+                        logging.info(f"[핫패치] {step_name}: 라이브 CCTV 스트림 비동기 재생 시작 완료.")
+                except Exception as e_play:
+                    logging.error(f"[핫패치] {step_name} 라이브 스트림 비동기 재생 중 오류: {e_play}")
+
+            threading.Thread(target=_async_play, name=f"VlcPlayThread_{step_name}", daemon=True).start()
+
+        else:
+            logging.info(f"[핫패치] {step_name}: GIF Placeholder 애니메이션 표시 요청.")
+            player_frame_widget.pack_forget()
+            if not placeholder_label.winfo_ismapped():
+                placeholder_label.pack(fill="both", expand=True)
+            placeholder_label.update_idletasks()
+
+            def _async_stop():
+                try:
+                    if player and player.is_playing():
+                        player.stop()
+                    logging.info(f"[핫패치] {step_name}: 라이브 CCTV 스트림 비동기 중지 완료.")
+                except Exception as e_stop:
+                    logging.error(f"[핫패치] {step_name} 라이브 스트림 비동기 중지 중 오류: {e_stop}")
+
+            threading.Thread(target=_async_stop, name=f"VlcStopThread_{step_name}", daemon=True).start()
+
+            if not self.gif_placeholder_paths or not any(os.path.exists(p) for p in self.gif_placeholder_paths):
+                logging.error(f"[핫패치] 사용 가능한 GIF 플레이스홀더 파일이 없습니다. {step_name} 화면이 검게 나올 수 있습니다.")
+                placeholder_label.configure(image=None, text="GIF 없음", fg="white", bg="black")
+                self._finalize_visibility_change(step_index)
+                return
+
+            available_gifs = [p for p in self.gif_placeholder_paths if os.path.exists(p)]
+            if not available_gifs:
+                logging.error(f"[핫패치] 실제로 사용 가능한 GIF 플레이스홀더 파일이 없습니다. {step_name} 화면이 검게 표시됩니다.")
+                placeholder_label.configure(image=None, text="GIF 로드 불가", fg="white", bg="black")
+                self._finalize_visibility_change(step_index)
+                return
+
+            chosen_gif_path = random.choice(available_gifs)
+            self._play_gif_animation(step_index, chosen_gif_path)
+
+    except Exception as e:
+        logging.error(f"[핫패치] {step_name} 가시성 제어 처리 중 예외 발생: {e}", exc_info=True)
+        self._finalize_visibility_change(step_index)
+
+def patched_quickstep_proceed_with_recording(self, step_name_proc_rec, step_index_proc_rec, record_button_proc_rec):
+    """실제 녹화 시작 또는 중지 처리를 담당하는 내부 메소드입니다. (비동기 스레드 위임)"""
+    from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+    from PyQt5.QtWidgets import QMessageBox
+    import threading
+    import logging
+    import os
+    
+    if not self.cctv_app.is_recording(step_index_proc_rec):
+        def _async_start_recording_task():
+            try:
+                temp_file_path_started = self.cctv_app.start_recording(step_index_proc_rec)
+                if temp_file_path_started:
+                    QMetaObject.invokeMethod(self, "_handle_start_recording_success_ui", Qt.QueuedConnection,
+                                             Q_ARG(str, step_name_proc_rec), Q_ARG(str, temp_file_path_started))
+                else:
+                    logging.error(f"[핫패치] {step_name_proc_rec} 녹화 시작에 실패했습니다 (VlcStartThread에서 확인됨).")
+                    QMetaObject.invokeMethod(record_button_proc_rec, "setText", Qt.QueuedConnection,
+                                             Q_ARG(str, "녹화 시작"))
+                    QMetaObject.invokeMethod(record_button_proc_rec, "setStyleSheet", Qt.QueuedConnection,
+                                             Q_ARG(str, "background-color: lightgreen; color: black; font-weight: bold;"))
+                    QMetaObject.invokeMethod(record_button_proc_rec, "setEnabled", Qt.QueuedConnection,
+                                             Q_ARG(bool, True))
+            except Exception as e:
+                logging.error(f"[핫패치] VlcStartThread 실행 중 예외 발생: {e}", exc_info=True)
+                QMetaObject.invokeMethod(record_button_proc_rec, "setText", Qt.QueuedConnection,
+                                         Q_ARG(str, "녹화 시작"))
+                QMetaObject.invokeMethod(record_button_proc_rec, "setStyleSheet", Qt.QueuedConnection,
+                                         Q_ARG(str, "background-color: lightgreen; color: black; font-weight: bold;"))
+                QMetaObject.invokeMethod(record_button_proc_rec, "setEnabled", Qt.QueuedConnection,
+                                         Q_ARG(bool, True))
+
+        record_button_proc_rec.setEnabled(False)
+        record_button_proc_rec.setText("시작 중...")
+        threading.Thread(target=_async_start_recording_task, name=f"VlcStartThread_{step_name_proc_rec}", daemon=True).start()
+    else:
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("녹화 중지 확인")
+        msg_box.setText(f"{step_name_proc_rec} 녹화를 중지하고 하이퍼랩스를 생성하시겠습니까?")
+        msg_box.setIcon(QMessageBox.Question)
+
+        start_button = msg_box.addButton("시작", QMessageBox.AcceptRole)
+        close_button = msg_box.addButton("닫기", QMessageBox.RejectRole)
+        cancel_recording_button = msg_box.addButton("녹화 취소", QMessageBox.DestructiveRole)
+
+        msg_box.setDefaultButton(start_button)
+        msg_box.exec_()
+
+        clicked_button = msg_box.clickedButton()
+
+        if clicked_button == start_button:
+            record_button_proc_rec.setEnabled(False)
+            record_button_proc_rec.setText("중지 중...")
+
+            temp_file_to_stop_rec = self.temp_recorded_files.get(step_name_proc_rec)
+            if not temp_file_to_stop_rec:
+                logging.error(f"[핫패치] {step_name_proc_rec} 녹화 중지 시 임시 파일 경로를 찾을 수 없습니다.")
+                QMessageBox.critical(self, "오류",
+                                     f"{step_name_proc_rec} 임시 녹화 파일 정보를 찾을 수 없습니다.")
+                if hasattr(self.tk_root_window, 'after') and self.cctv_app.is_recording(step_index_proc_rec):
+                    self.tk_root_window.after(0, lambda si_stop=step_index_proc_rec: self.cctv_app.stop_recording(
+                        si_stop, None))
+                else:
+                    record_button_proc_rec.setText("녹화 시작")
+                    record_button_proc_rec.setStyleSheet("background-color: lightgreen; color: black; font-weight: bold;")
+                    record_button_proc_rec.setEnabled(True)
+                return
+
+            if hasattr(self.tk_root_window, 'after'):
+                self.tk_root_window.after(0, lambda si_stop=step_index_proc_rec,
+                                                    tf_stop=temp_file_to_stop_rec: self.cctv_app.stop_recording(
+                    si_stop, tf_stop))
+            else:
+                logging.error("[핫패치] tk_root_window.after를 사용할 수 없습니다.")
+                record_button_proc_rec.setText("녹화 시작")
+                record_button_proc_rec.setStyleSheet("background-color: lightgreen; color: black; font-weight: bold;")
+                record_button_proc_rec.setEnabled(True)
+
+        elif clicked_button == cancel_recording_button:
+            logging.info(f"[핫패치] {step_name_proc_rec} 녹화 취소 선택됨.")
+            record_button_proc_rec.setEnabled(False)
+            record_button_proc_rec.setText("취소 중...")
+
+            temp_file_to_cancel = self.temp_recorded_files.get(step_name_proc_rec)
+
+            if hasattr(self.tk_root_window, 'after'):
+                self.tk_root_window.after(0,
+                                          lambda si_stop=step_index_proc_rec: self.cctv_app.stop_recording(si_stop,
+                                                                                                           ""))
+
+            if temp_file_to_cancel and os.path.exists(temp_file_to_cancel):
+                try:
+                    os.remove(temp_file_to_cancel)
+                    logging.info(f"[핫패치] 임시 파일 삭제 완료: {temp_file_to_cancel}")
+                except Exception as e_delete:
+                    logging.error(f"[핫패치] 임시 파일 삭제 실패: {e_delete}", exc_info=True)
+
+            if step_name_proc_rec in self.temp_recorded_files:
+                del self.temp_recorded_files[step_name_proc_rec]
+
+            record_button_proc_rec.setText("녹화 시작")
+            record_button_proc_rec.setStyleSheet("background-color: lightgreen; color: black; font-weight: bold;")
+            record_button_proc_rec.setEnabled(True)
+            self.stop_recording_timer_display(step_name_proc_rec)
+
 def apply_patch(main_win):
     """런타임 핫패치 진입점:
     - MainWindow.closeEvent 내 중복 'import os'로 인한 UnboundLocalError 문제를 해결합니다.
@@ -878,5 +1184,39 @@ def apply_patch(main_win):
             logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스 주입 중 오류 발생: {ex_sb}", exc_info=True)
     else:
         logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
+
+    # 5. CCTVApp 비동기화 및 RankingManager 캐싱 개편 핫픽스 (v1.3.0 미만 구버전에 필요)
+    if ver_parts < [1, 3, 0]:
+        try:
+            import data_handler
+            data_handler.RankingManager.preload_current_month_cache = patched_rm_preload_current_month_cache
+            data_handler.RankingManager._execute_save_to_disk = patched_rm_execute_save_to_disk
+            rm_instance = data_handler.RankingManager._instance
+            if rm_instance:
+                if not hasattr(rm_instance, 'file_lock'):
+                    import threading
+                    rm_instance.file_lock = threading.Lock()
+                rm_instance.preload_current_month_cache()
+            logging.info("[핫패치] RankingManager 비동기 캐시 예열 및 file_lock 핫픽스 패치 완료.")
+        except Exception as ex_rm_hot:
+            logging.error(f"[핫패치] RankingManager 핫픽스 주입 중 오류 발생: {ex_rm_hot}", exc_info=True)
+
+        try:
+            import cctv_app
+            cctv_app.CCTVApp.stop_recording = patched_cctv_stop_recording
+            cctv_app.CCTVApp._after_stop_recording_complete = patched_cctv_after_stop_recording_complete
+            cctv_app.CCTVApp._execute_set_stream_visibility = patched_cctv_execute_set_stream_visibility
+            logging.info("[핫패치] CCTVApp 비동기 VLC stop/play 및 레코더 stop 핫픽스 패치 완료.")
+        except Exception as ex_cctv_hot:
+            logging.error(f"[핫패치] CCTVApp 핫픽스 주입 중 오류 발생: {ex_cctv_hot}", exc_info=True)
+
+        try:
+            main_win.__class__._proceed_with_recording = patched_quickstep_proceed_with_recording
+            main_win._proceed_with_recording = types.MethodType(patched_quickstep_proceed_with_recording, main_win)
+            logging.info("[핫패치] MainWindow._proceed_with_recording 비동기 start_recording 핫픽스 패치 완료.")
+        except Exception as ex_quick_hot:
+            logging.error(f"[핫패치] MainWindow._proceed_with_recording 핫픽스 주입 중 오류 발생: {ex_quick_hot}", exc_info=True)
+    else:
+        logging.info("[핫패치] CCTVApp 및 MainWindow 비동기 개편 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
 
     logging.info("[핫패치] 원격 핫패치가 실시간으로 메모리에 주입되었습니다. 🔥")

@@ -5,6 +5,6 @@
   ],
   "version": "1.2.9",
   "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.2.9/Quickstep.exe",
-  "patch_version": 2,
+  "patch_version": 3,
   "patch_url": "https://github.com/QuickStep2024/QStep/raw/refs/heads/main/QStepScoreSyStem/patches/active_patch.py"
 }
