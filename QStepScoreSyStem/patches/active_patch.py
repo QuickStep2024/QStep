@@ -797,76 +797,86 @@ def apply_patch(main_win):
     - MainWindow.closeEvent 내 중복 'import os'로 인한 UnboundLocalError 문제를 해결합니다.
     - [1.2.9 패치] 테스트 모드 여부에 따른 RankingManager 로컬 캐시 폴더 동적 분리 및 재로드 핫픽스를 주입합니다.
     """
-    # 1.2.9 이상 버전에서는 이미 소스코드에 해당 패치 내용이 내장되어 있으므로 핫패치 적용을 스킵합니다.
-    current_ver_str = getattr(main_win, "CURRENT_VERSION", "1.0.0")
+    quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
+    current_ver_str = getattr(quickstep_mod, "CURRENT_VERSION", "1.0.0")
     try:
         ver_parts = [int(x) for x in current_ver_str.split(".")]
-        if ver_parts >= [1, 2, 9]:
-            logging.info(f"[핫패치] 현재 프로그램 버전(v{current_ver_str})은 1.2.9 이상이므로 핫패치 적용을 건너뜁니다.")
-            return
     except Exception as e:
         logging.warning(f"[핫패치] 버전 확인 중 예외 발생: {e}")
+        ver_parts = [1, 0, 0]
 
     logging.info("[핫패치] active_patch.py 로딩 및 실행 시작...")
 
-    # 1. MainWindow.closeEvent 핫픽스
-    try:
-        main_win.__class__.closeEvent = patched_close_event
-        main_win.closeEvent = types.MethodType(patched_close_event, main_win)
-        logging.info("[핫패치] MainWindow.closeEvent UnboundLocalError 핫픽스 패치 및 바인딩 완료.")
-    except Exception as ex:
-        logging.error(f"[핫패치] MainWindow.closeEvent 패치 바인딩 중 예외 발생: {ex}", exc_info=True)
+    # 1. MainWindow.closeEvent 핫픽스 (v1.2.9 미만 구버전에만 필요)
+    if ver_parts < [1, 2, 9]:
+        try:
+            main_win.__class__.closeEvent = patched_close_event
+            main_win.closeEvent = types.MethodType(patched_close_event, main_win)
+            logging.info("[핫패치] MainWindow.closeEvent UnboundLocalError 핫픽스 패치 및 바인딩 완료.")
+        except Exception as ex:
+            logging.error(f"[핫패치] MainWindow.closeEvent 패치 바인딩 중 예외 발생: {ex}", exc_info=True)
+    else:
+        logging.info("[핫패치] MainWindow.closeEvent가 이미 소스코드에 내장되어 패치를 건너뜁니다.")
 
-    # 2. RankingManager 로컬 캐시 데이터 폴더 동적 분리 핫픽스
-    try:
-        quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
-        data_handler_mod = sys.modules.get('data_handler')
-        if data_handler_mod and quickstep_mod:
-            RankingManager = getattr(data_handler_mod, 'RankingManager', None)
-            if RankingManager and RankingManager._instance:
-                config = getattr(quickstep_mod, 'config', None)
-                if not config:
-                    try:
-                        from data_handler import read_config
-                        config = read_config('config.cfg')
-                    except Exception:
-                        config = {}
-                
-                mode = config.get('mode', 'production') if config else 'production'
-                data_dir = 'data_test' if mode == 'test' else 'data'
-                
-                if RankingManager._instance.data_dir != data_dir:
-                    logging.info(f"[핫패치] RankingManager data_dir 변경 감지: {RankingManager._instance.data_dir} -> {data_dir}")
-                    with RankingManager._lock:
-                        RankingManager._instance.data_dir = data_dir
-                        os.makedirs(data_dir, exist_ok=True)
-                        RankingManager._instance.cache.clear()
-                        RankingManager._instance._load_cache_from_disk()
-                    logging.info(f"[핫패치] RankingManager 로컬 캐시 디렉토리 분리 및 재로드 완료 (경로: {data_dir})")
-    except Exception as ex_rm:
-        logging.error(f"[핫패치] RankingManager 로컬 캐시 디렉토리 핫픽스 주입 중 오류 발생: {ex_rm}", exc_info=True)
+    # 2. RankingManager 로컬 캐시 데이터 폴더 동적 분리 핫픽스 (v1.2.9 미만 구버전에만 필요)
+    if ver_parts < [1, 2, 9]:
+        try:
+            quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
+            data_handler_mod = sys.modules.get('data_handler')
+            if data_handler_mod and quickstep_mod:
+                RankingManager = getattr(data_handler_mod, 'RankingManager', None)
+                if RankingManager and RankingManager._instance:
+                    config = getattr(quickstep_mod, 'config', None)
+                    if not config:
+                        try:
+                            from data_handler import read_config
+                            config = read_config('config.cfg')
+                        except Exception:
+                            config = {}
+                    
+                    mode = config.get('mode', 'production') if config else 'production'
+                    data_dir = 'data_test' if mode == 'test' else 'data'
+                    
+                    if RankingManager._instance.data_dir != data_dir:
+                        logging.info(f"[핫패치] RankingManager data_dir 변경 감지: {RankingManager._instance.data_dir} -> {data_dir}")
+                        with RankingManager._lock:
+                            RankingManager._instance.data_dir = data_dir
+                            os.makedirs(data_dir, exist_ok=True)
+                            RankingManager._instance.cache.clear()
+                            RankingManager._instance._load_cache_from_disk()
+                        logging.info(f"[핫패치] RankingManager 로컬 캐시 디렉토리 분리 및 재로드 완료 (경로: {data_dir})")
+        except Exception as ex_rm:
+            logging.error(f"[핫패치] RankingManager 로컬 캐시 디렉토리 핫픽스 주입 중 오류 발생: {ex_rm}", exc_info=True)
+    else:
+        logging.info("[핫패치] RankingManager 로컬 캐시 디렉토리 핫픽스가 이미 소스코드에 내장되어 패치를 건너뜁니다.")
         
-    # 3. 1.2.8용 이모지 렌더링 핫픽스 (NotoColorEmoji 및 하트 기호 깨짐 해결)
-    try:
-        import gui.scoreboard_generator
-        gui.scoreboard_generator.draw_text_with_emojis = patched_draw_text_with_emojis
-        gui.scoreboard_generator.generate_scoreboard_image = patched_generate_scoreboard_image
-        logging.info("[핫패치] 1.2.8용 이모지 렌더링(NotoColorEmoji) 핫픽스 패치 및 바인딩 완료.")
-    except Exception as ex_emoji:
-        logging.error(f"[핫패치] 1.2.8용 이모지 렌더링 핫픽스 주입 중 오류 발생: {ex_emoji}", exc_info=True)
+    # 3. 1.2.8용 이모지 렌더링 핫픽스 (v1.3.0 미만 구버전에 필요)
+    if ver_parts < [1, 3, 0]:
+        try:
+            import gui.scoreboard_generator
+            gui.scoreboard_generator.draw_text_with_emojis = patched_draw_text_with_emojis
+            gui.scoreboard_generator.generate_scoreboard_image = patched_generate_scoreboard_image
+            logging.info("[핫패치] 1.2.8용 이모지 렌더링(NotoColorEmoji) 핫픽스 패치 및 바인딩 완료.")
+        except Exception as ex_emoji:
+            logging.error(f"[핫패치] 1.2.8용 이모지 렌더링 핫픽스 주입 중 오류 발생: {ex_emoji}", exc_info=True)
+    else:
+        logging.info("[핫패치] 1.2.8용 이모지 렌더링 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
 
-    # 4. 실시간 전광판(ScoreboardApp) 이모지 렌더링 핫픽스
-    try:
-        import scoreboard_app
-        scoreboard_app.ScoreboardApp.has_emoji = patched_sb_has_emoji
-        scoreboard_app.ScoreboardApp.draw_nickname_image = patched_sb_draw_nickname_image
-        scoreboard_app.ScoreboardApp.get_nickname_pixel_width = patched_sb_get_nickname_pixel_width
-        scoreboard_app.ScoreboardApp._show_page_and_schedule_next = patched_sb_show_page_and_schedule_next
-        scoreboard_app.ScoreboardApp._check_and_start_marquees = patched_sb_check_and_start_marquees
-        scoreboard_app.ScoreboardApp._start_nickname_marquee = patched_sb_start_nickname_marquee
-        scoreboard_app.ScoreboardApp._animate_nickname_marquee = patched_sb_animate_nickname_marquee
-        logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 패치 및 바인딩 완료.")
-    except Exception as ex_sb:
-        logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스 주입 중 오류 발생: {ex_sb}", exc_info=True)
+    # 4. 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 (v1.3.0 미만 구버전에 필요)
+    if ver_parts < [1, 3, 0]:
+        try:
+            import scoreboard_app
+            scoreboard_app.ScoreboardApp.has_emoji = patched_sb_has_emoji
+            scoreboard_app.ScoreboardApp.draw_nickname_image = patched_sb_draw_nickname_image
+            scoreboard_app.ScoreboardApp.get_nickname_pixel_width = patched_sb_get_nickname_pixel_width
+            scoreboard_app.ScoreboardApp._show_page_and_schedule_next = patched_sb_show_page_and_schedule_next
+            scoreboard_app.ScoreboardApp._check_and_start_marquees = patched_sb_check_and_start_marquees
+            scoreboard_app.ScoreboardApp._start_nickname_marquee = patched_sb_start_nickname_marquee
+            scoreboard_app.ScoreboardApp._animate_nickname_marquee = patched_sb_animate_nickname_marquee
+            logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 패치 및 바인딩 완료.")
+        except Exception as ex_sb:
+            logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스 주입 중 오류 발생: {ex_sb}", exc_info=True)
+    else:
+        logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
 
     logging.info("[핫패치] 원격 핫패치가 실시간으로 메모리에 주입되었습니다. 🔥")
