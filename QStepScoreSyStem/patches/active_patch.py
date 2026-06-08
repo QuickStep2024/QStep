@@ -1103,6 +1103,13 @@ def apply_patch(main_win):
     - MainWindow.closeEvent 내 중복 'import os'로 인한 UnboundLocalError 문제를 해결합니다.
     - [1.2.9 패치] 테스트 모드 여부에 따른 RankingManager 로컬 캐시 폴더 동적 분리 및 재로드 핫픽스를 주입합니다.
     """
+    # 0. UPDATE_URL 핫픽스 (github.com 504 Gateway Timeout 방지용 raw.githubusercontent.com 강제 우회)
+    for mod_name in ['__main__', 'quickstep']:
+        mod = sys.modules.get(mod_name)
+        if mod:
+            setattr(mod, "UPDATE_URL", "https://raw.githubusercontent.com/QuickStep2024/QStep/main/version.json")
+    logging.info("[핫패치] UPDATE_URL을 raw.githubusercontent.com으로 우회 설정 완료.")
+
     quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
     current_ver_str = getattr(quickstep_mod, "CURRENT_VERSION", "1.0.0")
     try:
