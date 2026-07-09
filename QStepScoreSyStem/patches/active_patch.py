@@ -276,6 +276,73 @@ def patched_draw_text_with_emojis(draw, position, text, font, emoji_font, fill, 
                 x += char_w
 
 
+def get_inducted_teams_for_room(room_size):
+    try:
+        import sys
+        quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
+        db_app = getattr(quickstep_mod, 'AllData_app', None)
+        config = getattr(quickstep_mod, 'config', None)
+        if not config:
+            try:
+                from data_handler import read_config
+                config = read_config('config.cfg')
+            except Exception:
+                config = {}
+                
+        from hall_of_fame import HallOfFameManager, NicknameAliasManager
+        hof_manager = HallOfFameManager(db_app, config)
+        alias_manager = NicknameAliasManager(db_app, config)
+        inducted = hof_manager.get_inducted_teams(room_size, alias_manager)
+        return {t["primary_nickname"].strip().lower() for t in inducted}, alias_manager
+    except Exception as e:
+        logging.error(f"Error getting inducted teams for room {room_size}: {e}")
+        return set(), None
+
+
+def generate_trophy_image(app):
+    # Generates a PIL image of size (45, 32) containing both the 🏆 emoji and the ★ star side-by-side
+    try:
+        emoji_font = getattr(app, 'pil_font_emoji', None)
+        if emoji_font is None:
+            font_path_emoji = resource_path(os.path.join("fonts", "NotoColorEmoji-Regular.ttf"))
+            if not os.path.exists(font_path_emoji):
+                font_path_emoji = "arial.ttf"
+            emoji_font = ImageFont.truetype(font_path_emoji, 109)
+            
+        font_path_bold = resource_path(os.path.join("fonts", "경기천년제목_Bold.ttf"))
+        if not os.path.exists(font_path_bold):
+            font_path_bold = "arial.ttf"
+        star_font = ImageFont.truetype(font_path_bold, 16)
+        
+        temp_img = Image.new("RGBA", (150, 150), (0, 0, 0, 0))
+        temp_draw = ImageDraw.Draw(temp_img)
+        temp_draw.text((10, 10), "🏆", font=emoji_font, fill=None, embedded_color=True)
+        
+        crop_bbox = temp_img.getbbox()
+        if crop_bbox is not None:
+            cropped = temp_img.crop(crop_bbox)
+            crop_w = crop_bbox[2] - crop_bbox[0]
+            crop_h = crop_bbox[3] - crop_bbox[1]
+            
+            target_h = 26
+            target_w = int(crop_w * (target_h / crop_h))
+            
+            scaled_emoji = cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            
+            final_img = Image.new("RGBA", (45, 32), (0, 0, 0, 0))
+            # Paste trophy at x=0
+            final_img.paste(scaled_emoji, (0, 3), scaled_emoji)
+            
+            # Draw ★ right next to it in gold (size 16)
+            final_draw = ImageDraw.Draw(final_img)
+            final_draw.text((27, 7), "★", font=star_font, fill=(255, 215, 0, 255))
+            
+            return ImageTk.PhotoImage(final_img)
+    except Exception as e:
+        logging.error(f"Error generating dynamic trophy-star image: {e}")
+    return ""
+
+
 def patched_generate_scoreboard_image(year, month, room_size_name, max_rank, ratio, data, output_path, start_rank=1):
     """
     PIL을 사용하여 점수판 이미지를 생성합니다.
@@ -378,30 +445,99 @@ def patched_generate_scoreboard_image(year, month, room_size_name, max_rank, rat
     top3_bgs = {1: "#1F1A00", 2: "#101C1F", 3: "#1F1010"}
     top3_rank_fgs = {1: "#FFD700", 2: "#C0C0C0", 3: "#CD7F32"}
     
+    # Resolve room size code from name
+    room_size_code = None
+    for k, v in {"S": "작은방", "M": "중간방", "L": "큰방", "XL": "더큰방"}.items():
+        if v in room_size_name or k == room_size_name:
+            room_size_code = k
+            break
+            
+    inducted_primary_nicks, alias_manager = get_inducted_teams_for_room(room_size_code)
+    
+    # Pre-calculate ranks and HOF trophy status
+    calculated_ranks = []
+    non_hof_rank = start_rank
+    
+    for idx, entry in enumerate(data):
+        nick = str(entry.get("닉네임", "익명"))
+        primary = alias_manager.get_primary_nickname(nick) if alias_manager else nick
+        primary_clean = primary.strip().lower()
+        
+        if room_size_code in ["S", "M", "L", "XL"] and primary_clean in inducted_primary_nicks:
+            is_hof_trophy = (non_hof_rank == 1)
+            calculated_ranks.append((None, is_hof_trophy))
+        else:
+            calculated_ranks.append((non_hof_rank, False))
+            non_hof_rank += 1
+            
     for i in range(max_rank):
-        rank = start_rank + i
         curr_y = start_y + i * row_h
         
         if i < len(data):
             entry = data[i]
+            rank_num, is_hof_trophy = calculated_ranks[i]
             
-            # 행 배경 (Top 3 전용)
-            if rank in top3_bgs:
-                draw.rectangle([10, curr_y, width - 10, curr_y + row_h - 2], fill=top3_bgs[rank])
+            # 행 배경
+            row_bg_color = None
+            if is_hof_trophy:
+                row_bg_color = top3_bgs.get(1)
+            elif rank_num in top3_bgs:
+                row_bg_color = top3_bgs[rank_num]
+                
+            if row_bg_color:
+                draw.rectangle([10, curr_y, width - 10, curr_y + row_h - 2], fill=row_bg_color)
             
             # 1. 등수
-            rank_fg = top3_rank_fgs.get(rank, "#CFD8DC")
-            # 왕관 아이콘
-            if rank in crowns:
-                image.paste(crowns[rank], (int(col_x[0] + 5), int(curr_y + (row_h - 40 * scale) / 2)), crowns[rank])
-                draw.text((col_x[0] + 50 * scale, curr_y + (row_h - row_size) / 2), str(rank), font=rank_font, fill=rank_fg)
-            else:
-                draw.text((col_x[0] + 20 * scale, curr_y + (row_h - row_size) / 2), str(rank), font=rank_font, fill=rank_fg)
+            rank_fg = "#CFD8DC"
+            if is_hof_trophy:
+                rank_fg = top3_rank_fgs.get(1, rank_fg)
+            elif rank_num in top3_rank_fgs:
+                rank_fg = top3_rank_fgs[rank_num]
+                
+            if is_hof_trophy:
+                try:
+                    temp_sz = 150
+                    temp_img = Image.new("RGBA", (temp_sz, temp_sz), (0, 0, 0, 0))
+                    temp_draw = ImageDraw.Draw(temp_img)
+                    temp_draw.text((10, 10), "🏆", font=emoji_font, fill=None, embedded_color=True)
+                    
+                    crop_bbox = temp_img.getbbox()
+                    if crop_bbox is not None:
+                        cropped = temp_img.crop(crop_bbox)
+                        crop_w = crop_bbox[2] - crop_bbox[0]
+                        crop_h = crop_bbox[3] - crop_bbox[1]
+                        
+                        target_h = int(40 * scale)
+                        target_w = int(crop_w * (target_h / crop_h))
+                        
+                        scaled_emoji = cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                        y_offset = int((row_h - target_h) / 2)
+                        
+                        image.paste(scaled_emoji, (int(col_x[0] + 5), int(curr_y + y_offset)), scaled_emoji)
+                        
+                        # Draw ★ right next to it in gold (size row_size * 0.95)
+                        star_font = ImageFont.truetype(font_path_bold, int(row_size * 0.95))
+                        draw.text((col_x[0] + 5 + target_w + int(10 * scale), curr_y + (row_h - row_size * 0.95) / 2), "★", font=star_font, fill="#FFD700")
+                except Exception as e_trophy:
+                    logging.error(f"Error drawing trophy emoji: {e_trophy}")
+            elif rank_num in crowns:
+                image.paste(crowns[rank_num], (int(col_x[0] + 5), int(curr_y + (row_h - 40 * scale) / 2)), crowns[rank_num])
+                draw.text((col_x[0] + 50 * scale, curr_y + (row_h - row_size) / 2), str(rank_num), font=rank_font, fill=rank_fg)
+            elif rank_num is not None:
+                draw.text((col_x[0] + 20 * scale, curr_y + (row_h - row_size) / 2), str(rank_num), font=rank_font, fill=rank_fg)
             
             # 2. 닉네임
             nick = str(entry.get("닉네임", "익명"))
             nick_color = "#FFFFFF"
-            if rank == 1: nick_color = "#FFFFE0"
+            if is_hof_trophy:
+                nick_color = "#FFFFE0"
+            elif rank_num == 1:
+                nick_color = "#FFFFE0"
+            elif rank_num == 2:
+                nick_color = "#E8E8E8"
+            elif rank_num == 3:
+                nick_color = "#FFDAB9"
+                
             patched_draw_text_with_emojis(draw, (col_x[1] + 10, curr_y + (row_h - row_size) / 2), nick, nick_font, emoji_font, nick_color, image=image)
             
             # 3. 점수
@@ -474,7 +610,7 @@ def patched_sb_has_emoji(self, text):
                 return True
     return False
 
-def patched_sb_draw_nickname_image(self, nickname, row_bg_hex, fg_hex, target_width=None):
+def patched_sb_draw_nickname_image(self, nickname, row_bg_hex, fg_hex, target_width=None, is_hof_trophy=False):
     if not hasattr(self, 'pil_font_regular') or self.pil_font_regular is None:
         patched_sb_has_emoji(self, "")
         
@@ -529,6 +665,9 @@ def patched_sb_draw_nickname_image(self, nickname, row_bg_hex, fg_hex, target_wi
         char_info.append((char, is_emoji, char_w))
         total_w += char_w
         
+    if is_hof_trophy:
+        total_w += int(line_h * 0.8) + 5
+        
     total_h = 32
     if target_width is not None:
         total_w = target_width
@@ -575,6 +714,15 @@ def patched_sb_draw_nickname_image(self, nickname, row_bg_hex, fg_hex, target_wi
                 draw.text((x, y), char, font=font, fill=fg_rgb + (255,))
                 x += char_w
                 
+    if is_hof_trophy:
+        trophy_x = x + 2
+        trophy_y = y - int(line_h * 0.3)
+        font_path_bold = resource_path(os.path.join("fonts", "경기천년제목_Bold.ttf"))
+        if not os.path.exists(font_path_bold):
+            font_path_bold = "arial.ttf"
+        badge_font = ImageFont.truetype(font_path_bold, int(line_h * 0.7))
+        patched_draw_text_with_emojis(draw, (trophy_x, trophy_y), "🏆", badge_font, emoji_font, (255, 215, 0), image=image)
+        
     return image
 
 def patched_sb_show_page_and_schedule_next(self, scores_data):
@@ -585,6 +733,27 @@ def patched_sb_show_page_and_schedule_next(self, scores_data):
         self._after_id_update_scores = None
 
     try:
+        room_size = self.room_sizes_config[self.current_room_index]
+        
+        # 1. Load HOF teams
+        from patches.active_patch import get_inducted_teams_for_room
+        inducted_primary_nicks, alias_manager = get_inducted_teams_for_room(room_size)
+        
+        # Calculate ranks and HOF trophy status for the entire list
+        calculated_ranks = []
+        non_hof_rank = 1
+        for idx, entry in enumerate(scores_data):
+            nick = str(entry.get("닉네임", "익명"))
+            primary = alias_manager.get_primary_nickname(nick) if alias_manager else nick
+            primary_clean = primary.strip().lower()
+            
+            if room_size in ["S", "M", "L", "XL"] and primary_clean in inducted_primary_nicks:
+                is_hof_trophy = (non_hof_rank == 1)
+                calculated_ranks.append((None, is_hof_trophy))
+            else:
+                calculated_ranks.append((non_hof_rank, False))
+                non_hof_rank += 1
+
         display_start_rank_idx = 20 if self.current_page == 1 else 0
         display_end_rank_idx = 40 if self.current_page == 1 else 20
 
@@ -604,22 +773,41 @@ def patched_sb_show_page_and_schedule_next(self, scores_data):
 
         for i in rows_to_update:
             entry = scores_data[i]
-            rank = i + 1
+            rank_num, is_hof_trophy = calculated_ranks[i]
             
-            self.score_labels[i]['rank_icon'].config(image=self.crown_images_tk.get(rank, ''))
-            self.score_labels[i]['rank_text'].config(text=f"{rank}")
+            # Draw rank
+            if is_hof_trophy:
+                if not hasattr(self, '_trophy_image_tk') or self._trophy_image_tk is None:
+                    from patches.active_patch import generate_trophy_image
+                    self._trophy_image_tk = generate_trophy_image(self)
+                self.score_labels[i]['rank_icon'].config(image=self._trophy_image_tk if self._trophy_image_tk else '')
+                self.score_labels[i]['rank_text'].config(text="", fg="#FFD700")
+            elif rank_num is not None:
+                self.score_labels[i]['rank_icon'].config(image=self.crown_images_tk.get(rank_num, ''))
+                self.score_labels[i]['rank_text'].config(text=f"{rank_num}", fg="#CFD8DC")
+            else:
+                self.score_labels[i]['rank_icon'].config(image='')
+                self.score_labels[i]['rank_text'].config(text="", fg="#CFD8DC")
 
             raw_nickname = str(entry.get("닉네임", "익명"))
             nickname_label_widget = self.score_labels[i]['nickname']
             
+            # Determine background and nickname text colors
+            top_3_bgs = {1: "#1F1A00", 2: "#101C1F", 3: "#1F1010"}
+            top_3_nick_fgs = {1: "#FFFFE0", 2: "#E8E8E8", 3: "#FFDAB9"}
+            
+            row_bg = "#0A0A23"
+            nick_fg_color = "#FFFFFF"
+            
+            if is_hof_trophy:
+                row_bg = top_3_bgs.get(1)
+                nick_fg_color = top_3_nick_fgs.get(1)
+            elif rank_num in top_3_bgs:
+                row_bg = top_3_bgs[rank_num]
+                nick_fg_color = top_3_nick_fgs[rank_num]
+                
             if self.has_emoji(raw_nickname):
-                top_3_bgs = {1: "#1F1A00", 2: "#101C1F", 3: "#1F1010"}
-                row_bg = top_3_bgs.get(rank, "#0A0A23")
-                
-                top_3_nick_fgs = {1: "#FFFFE0", 2: "#E8E8E8", 3: "#FFDAB9"}
-                nick_fg_color = top_3_nick_fgs.get(rank, "#FFFFFF")
-                
-                pil_img = self.draw_nickname_image(raw_nickname, row_bg, nick_fg_color)
+                pil_img = self.draw_nickname_image(raw_nickname, row_bg, nick_fg_color, is_hof_trophy=False)
                 photo_img = ImageTk.PhotoImage(pil_img)
                 
                 if not hasattr(self, '_nickname_photo_images'):
@@ -628,7 +816,7 @@ def patched_sb_show_page_and_schedule_next(self, scores_data):
                 
                 nickname_label_widget.config(image=photo_img, text="")
             else:
-                nickname_label_widget.config(image='', text=raw_nickname)
+                nickname_label_widget.config(image='', text=raw_nickname, fg=nick_fg_color)
             
             self.score_labels[i]['score'].config(text=f"{int(entry.get('점수', 0)):,}")
             self.score_labels[i]['level'].config(text=f"{int(entry.get('레벨', 0)):d}")
@@ -1164,11 +1352,19 @@ def apply_patch(main_win):
         logging.info("[핫패치] RankingManager 로컬 캐시 디렉토리 핫픽스가 이미 소스코드에 내장되어 패치를 건너뜁니다.")
         
     # 3. 1.2.8용 이모지 렌더링 핫픽스 (v1.3.0 미만 구버전에 필요)
-    if ver_parts < [1, 3, 0]:
+    if ver_parts <= [1, 3, 0]:
         try:
             import gui.scoreboard_generator
             gui.scoreboard_generator.draw_text_with_emojis = patched_draw_text_with_emojis
             gui.scoreboard_generator.generate_scoreboard_image = patched_generate_scoreboard_image
+            
+            # Patch in gui.dialogs since it imports generate_scoreboard_image directly
+            try:
+                import gui.dialogs
+                gui.dialogs.generate_scoreboard_image = patched_generate_scoreboard_image
+            except Exception as e_dlg:
+                logging.error(f"[핫패치] gui.dialogs.generate_scoreboard_image 바인딩 실패: {e_dlg}")
+                
             logging.info("[핫패치] 1.2.8용 이모지 렌더링(NotoColorEmoji) 핫픽스 패치 및 바인딩 완료.")
         except Exception as ex_emoji:
             logging.error(f"[핫패치] 1.2.8용 이모지 렌더링 핫픽스 주입 중 오류 발생: {ex_emoji}", exc_info=True)
@@ -1176,16 +1372,17 @@ def apply_patch(main_win):
         logging.info("[핫패치] 1.2.8용 이모지 렌더링 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
 
     # 4. 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 (v1.3.0 미만 구버전에 필요)
-    if ver_parts < [1, 3, 0]:
+    if ver_parts <= [1, 3, 0]:
         try:
             import scoreboard_app
-            scoreboard_app.ScoreboardApp.has_emoji = patched_sb_has_emoji
-            scoreboard_app.ScoreboardApp.draw_nickname_image = patched_sb_draw_nickname_image
-            scoreboard_app.ScoreboardApp.get_nickname_pixel_width = patched_sb_get_nickname_pixel_width
-            scoreboard_app.ScoreboardApp._show_page_and_schedule_next = patched_sb_show_page_and_schedule_next
-            scoreboard_app.ScoreboardApp._check_and_start_marquees = patched_sb_check_and_start_marquees
-            scoreboard_app.ScoreboardApp._start_nickname_marquee = patched_sb_start_nickname_marquee
-            scoreboard_app.ScoreboardApp._animate_nickname_marquee = patched_sb_animate_nickname_marquee
+            for app_class in [scoreboard_app.ScoreboardApp] + ([quickstep_mod.ScoreboardApp] if (quickstep_mod and hasattr(quickstep_mod, 'ScoreboardApp')) else []):
+                app_class.has_emoji = patched_sb_has_emoji
+                app_class.draw_nickname_image = patched_sb_draw_nickname_image
+                app_class.get_nickname_pixel_width = patched_sb_get_nickname_pixel_width
+                app_class._show_page_and_schedule_next = patched_sb_show_page_and_schedule_next
+                app_class._check_and_start_marquees = patched_sb_check_and_start_marquees
+                app_class._start_nickname_marquee = patched_sb_start_nickname_marquee
+                app_class._animate_nickname_marquee = patched_sb_animate_nickname_marquee
             logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 패치 및 바인딩 완료.")
         except Exception as ex_sb:
             logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스 주입 중 오류 발생: {ex_sb}", exc_info=True)
@@ -1193,7 +1390,7 @@ def apply_patch(main_win):
         logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
 
     # 5. CCTVApp 비동기화 및 RankingManager 캐싱 개편 핫픽스 (v1.3.0 미만 구버전에 필요)
-    if ver_parts < [1, 3, 0]:
+    if ver_parts <= [1, 3, 0]:
         try:
             import data_handler
             data_handler.RankingManager.preload_current_month_cache = patched_rm_preload_current_month_cache
