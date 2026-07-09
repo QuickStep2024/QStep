@@ -1351,8 +1351,8 @@ def apply_patch(main_win):
     else:
         logging.info("[핫패치] RankingManager 로컬 캐시 디렉토리 핫픽스가 이미 소스코드에 내장되어 패치를 건너뜁니다.")
         
-    # 3. 1.2.8용 이모지 렌더링 핫픽스 (v1.3.0 미만 구버전에 필요)
-    if ver_parts <= [1, 3, 0]:
+    # 3. 이모지 렌더링 및 명예의 전당 점수판 패치 (v1.3.2 미만 구버전에만 적용)
+    if ver_parts < [1, 3, 2]:
         try:
             import gui.scoreboard_generator
             gui.scoreboard_generator.draw_text_with_emojis = patched_draw_text_with_emojis
@@ -1365,14 +1365,14 @@ def apply_patch(main_win):
             except Exception as e_dlg:
                 logging.error(f"[핫패치] gui.dialogs.generate_scoreboard_image 바인딩 실패: {e_dlg}")
                 
-            logging.info("[핫패치] 1.2.8용 이모지 렌더링(NotoColorEmoji) 핫픽스 패치 및 바인딩 완료.")
+            logging.info("[핫패치] 이모지 렌더링(NotoColorEmoji) 및 명예의 전당 점수판 패치 완료.")
         except Exception as ex_emoji:
-            logging.error(f"[핫패치] 1.2.8용 이모지 렌더링 핫픽스 주입 중 오류 발생: {ex_emoji}", exc_info=True)
+            logging.error(f"[핫패치] 이모지 렌더링 및 명예의 전당 점수판 패치 중 오류 발생: {ex_emoji}", exc_info=True)
     else:
-        logging.info("[핫패치] 1.2.8용 이모지 렌더링 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
+        logging.info("[핫패치] 명예의 전당 점수판 기능이 이미 소스코드에 내장되어(v1.3.2 이상) 패치를 건너뜁니다.")
 
-    # 4. 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 (v1.3.0 미만 구버전에 필요)
-    if ver_parts <= [1, 3, 0]:
+    # 4. 실시간 전광판(ScoreboardApp) 이모지 렌더링, 마키 애니메이션 및 명예의 전당 패치 (v1.3.2 미만 구버전에만 적용)
+    if ver_parts < [1, 3, 2]:
         try:
             import scoreboard_app
             for app_class in [scoreboard_app.ScoreboardApp] + ([quickstep_mod.ScoreboardApp] if (quickstep_mod and hasattr(quickstep_mod, 'ScoreboardApp')) else []):
@@ -1383,11 +1383,11 @@ def apply_patch(main_win):
                 app_class._check_and_start_marquees = patched_sb_check_and_start_marquees
                 app_class._start_nickname_marquee = patched_sb_start_nickname_marquee
                 app_class._animate_nickname_marquee = patched_sb_animate_nickname_marquee
-            logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 마키 애니메이션 핫픽스 패치 및 바인딩 완료.")
+            logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 이모지 렌더링 및 명예의 전당 패치 완료.")
         except Exception as ex_sb:
-            logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스 주입 중 오류 발생: {ex_sb}", exc_info=True)
+            logging.error(f"[핫패치] 실시간 전광판(ScoreboardApp) 패치 중 오류 발생: {ex_sb}", exc_info=True)
     else:
-        logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 핫픽스가 이미 소스코드에 내장되어(v1.3.0 이상) 패치를 건너뜁니다.")
+        logging.info("[핫패치] 실시간 전광판(ScoreboardApp) 명예의 전당 기능이 이미 소스코드에 내장되어(v1.3.2 이상) 패치를 건너뜁니다.")
 
     # 5. CCTVApp 비동기화 및 RankingManager 캐싱 개편 핫픽스 (v1.3.0 미만 구버전에 필요)
     if ver_parts <= [1, 3, 0]:
