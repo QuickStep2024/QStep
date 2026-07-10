@@ -276,22 +276,36 @@ def patched_draw_text_with_emojis(draw, position, text, font, emoji_font, fill, 
                 x += char_w
 
 
+_cached_hof_manager = None
+_cached_alias_manager = None
+
 def get_inducted_teams_for_room(room_size):
+    global _cached_hof_manager, _cached_alias_manager
     try:
         import sys
         quickstep_mod = sys.modules.get('__main__') or sys.modules.get('quickstep')
-        db_app = getattr(quickstep_mod, 'AllData_app', None)
-        config = getattr(quickstep_mod, 'config', None)
-        if not config:
-            try:
-                from data_handler import read_config
-                config = read_config('config.cfg')
-            except Exception:
-                config = {}
-                
-        from hall_of_fame import HallOfFameManager, NicknameAliasManager
-        hof_manager = HallOfFameManager(db_app, config)
-        alias_manager = NicknameAliasManager(db_app, config)
+        window = getattr(quickstep_mod, 'window', None)
+        
+        if window and hasattr(window, 'hall_of_fame_manager') and hasattr(window, 'nickname_alias_manager'):
+            hof_manager = window.hall_of_fame_manager
+            alias_manager = window.nickname_alias_manager
+        else:
+            if _cached_hof_manager is None or _cached_alias_manager is None:
+                db_app = getattr(quickstep_mod, 'AllData_app', None)
+                config = getattr(quickstep_mod, 'config', None)
+                if not config:
+                    try:
+                        from data_handler import read_config
+                        config = read_config('config.cfg')
+                    except Exception:
+                        config = {}
+                from hall_of_fame import HallOfFameManager, NicknameAliasManager
+                _cached_hof_manager = HallOfFameManager(db_app, config)
+                _cached_alias_manager = NicknameAliasManager(db_app, config)
+            
+            hof_manager = _cached_hof_manager
+            alias_manager = _cached_alias_manager
+            
         inducted = hof_manager.get_inducted_teams(room_size, alias_manager)
         return {t["primary_nickname"].strip().lower() for t in inducted}, alias_manager
     except Exception as e:
