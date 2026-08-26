@@ -1,7 +1,7 @@
 {
-  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.3.5/Quickstep.exe",
-  "notes": "1.3.5 핫패치 적용 ++ 무한루프 오류 수정 ++ 자잘한 버그 정리",
+  "notes": "1.3.6 핫패치 적용 -- DB동기화 안됨 버그 제거",
   "patch_version": 0,
-  "version": "1.3.5",
-  "patch_url": "https://raw.githubusercontent.com/QuickStep2024/QStep/main/QStepScoreSyStem/patches/active_patch.py"
+  "url": "https://github.com/QuickStep2024/QStep/releases/download/v1.3.6/Quickstep.exe",
+  "patch_url": "https://raw.githubusercontent.com/QuickStep2024/QStep/main/QStepScoreSyStem/patches/active_patch.py",
+  "version": "1.3.6"
 }
